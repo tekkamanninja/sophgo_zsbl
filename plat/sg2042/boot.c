@@ -21,8 +21,8 @@
 #include "spinlock.h"
 #include "board.h"
 #include <libfdt.h>
-//#include <thread_safe_printf.h>
 
+#define FILE_NUM	4
 //#define ZSBL_BOOT_DEBUG
 //#define ZSBL_BOOT_DEBUG_LOOP
 
@@ -79,28 +79,10 @@ void print_u8(unsigned int u32)
 }
 #endif
 
-#define L1_CACHE_BYTES 64
-
-static inline void sync_is(void)
-{
-	asm volatile (".long 0x01b0000b");
-}
-
-void wbinv_va_range(unsigned long start, unsigned long end)
-{
-	register unsigned long i asm("a0") = start & ~(L1_CACHE_BYTES - 1);
-
-	for (; i < end; i += L1_CACHE_BYTES)
-		asm volatile (".long 0x0275000b"); /* dcache.civa a0 */
-
-	sync_is();
-}
-
 enum {
         ID_OPENSBI = 0,
-        ID_KERNEL,
-        ID_RAMFS,
         ID_DEVICETREE,
+        ID_UBOOT,
         ID_MAX,
 };
 
@@ -110,57 +92,29 @@ BOOT_FILE boot_file[ID_MAX] = {
 		.name = "0:riscv64/fw_jump.bin",
 		.addr = OPENSBI_ADDR,
 	},
-	[ID_KERNEL] = {
-		.id = ID_KERNEL,
-		.name = "0:riscv64/riscv64_Image",
-		.addr = KERNEL_ADDR,
-	},
-	[ID_RAMFS] = {
-		.id = ID_RAMFS,
-		.name = "0:riscv64/initrd.img",
-		.addr = RAMFS_ADDR,
-	},
 	[ID_DEVICETREE] = {
 		.id = ID_DEVICETREE,
-		.name = "0:riscv64/mango.dtb",
+		.name = "0:riscv64/mango_evb_v0.1.dtb",
 		.addr = DEVICETREE_ADDR,
 	},
+	[ID_UBOOT] = {
+		.id = ID_UBOOT,
+		.name = "0:riscv64/u-boot-dtb.bin",
+		.addr = UBOOT_ADDR,
+	},
+
 };
 
-static char *img_name_sd[] = {
+char *sd_img_name[FILE_NUM] = {
 	"0:riscv64/fw_jump.bin",
-	"0:riscv64/riscv64_Image",
-	"0:riscv64/initrd.img",
-	"0:riscv64/mango.dtb",
+	"0:riscv64/mango_evb_v0.1.dtb",
+	"0:riscv64/u-boot-dtb.bin",
 };
 
-static char *img_name_spi[] = {
+char *spflash_img_name[FILE_NUM] = {
 	"fw_jump.bin",
-	"riscv64_Image",
-	"initrd.img",
-	"mango.dtb",
-};
-
-char **img_name[] = {
-	[IO_DEVICE_SD] = img_name_sd,
-	[IO_DEVICE_SPIFLASH] = img_name_spi,
-};
-
-static char *dtb_name_sd[] = {
-	"0:riscv64/mango-sophgo-x8evb.dtb",
-	"0:riscv64/mango-milkv-pioneer.dtb",
-	"0:riscv64/mango-sophgo-pisces.dtb",
-};
-
-static char *dtb_name_spi[] = {
-	"mango-sophgo-x8evb.dtb",
-	"mango-milkv-pioneer.dtb",
-	"mango-sophgo-pisces.dtb",
-};
-
-char **dtb_name[] = {
-	[IO_DEVICE_SD] = dtb_name_sd,
-	[IO_DEVICE_SPIFLASH] = dtb_name_spi,
+	"mango_evb_v0.1.dtb",
+	"u-boot-dtb.bin",
 };
 
 char *ddr_node_name[SG2042_MAX_CHIP_NUM][DDR_CHANLE_NUM] = {
@@ -209,9 +163,6 @@ int read_all_img(IO_DEV *io_dev)
 			pr_err("close %s failed\n", boot_file[i].name);
 			goto umount_dev;
 		}
-
-		wbinv_va_range(boot_file[i].addr, boot_file[i].addr + info.fsize);
-		__asm__ __volatile__ ("fence.i"::);
 	}
 
 	io_dev->func.destroy();
@@ -235,28 +186,18 @@ int boot_device_register()
 	return 0;
 }
 
-static inline char** get_bootfile_list(int dev_num, char** bootfile[])
-{
-	if (dev_num < IO_DEVICE_MAX)
-		return bootfile[dev_num];
-	return NULL;
-}
-
 int build_bootfile_info(int dev_num)
 {
-	uint32_t reg;
-	char** imgs = get_bootfile_list(dev_num, img_name);
-	char** dtbs = get_bootfile_list(dev_num, dtb_name);
-
-	if (!imgs || !dtbs)
+	if (dev_num == IO_DEVICE_SD) {
+		for (int i = 0; i < ID_MAX; i++)
+			boot_file[i].name = sd_img_name[i];
+	}
+	else if (dev_num == IO_DEVICE_SPIFLASH) {
+		for (int i = 0; i < ID_MAX; i++)
+			boot_file[i].name = spflash_img_name[i];
+	}
+	else
 		return -1;
-
-	for (int i = 0; i < ID_MAX; i++)
-		boot_file[i].name = imgs[i];
-
-	reg = mmio_read_32(BOARD_TYPE_REG);
-	if (reg >= 0x02 && reg <= 0x04)
-		boot_file[ID_DEVICETREE].name = dtbs[reg - 0x02];
 
 	return 0;
 }
@@ -268,6 +209,11 @@ int read_boot_file(void)
 
 	if (boot_device_register())
 		return -1;
+
+	if (mmio_read_32(BOARD_TYPE_REG) == 0x02)
+		pr_info("dnx: type 0.2: %d\n", current_hartid());
+	else
+		pr_info("dnx: type 0.0\n");
 
 	if ((mmio_read_32(BOOT_SEL_ADDR) & BOOT_FROM_SD_FIRST)
 	    && bm_sd_card_detect()) {
@@ -468,7 +414,6 @@ static void secondary_core_fun(void *priv)
 
 #endif // ZSBL_BOOT_DEBUG
 
-	__asm__ __volatile__ ("fence.i"::);
 	jump_to(boot_file[ID_OPENSBI].addr, current_hartid(),
 		boot_file[ID_DEVICETREE].addr);
 }
@@ -539,7 +484,7 @@ int build_board_info(void)
 			sg2042_board_info.ddr_info[i].ddr_node_name[j] = ddr_node_name[i][j];
 
 	sg2042_board_info.ddr_info[0].ddr_start_base[0] = 0;
-	sg2042_board_info.ddr_info[1].ddr_start_base[0] = 0x8000000000;
+	sg2042_board_info.ddr_info[1].ddr_start_base[0] = 0x800000000;
 
 	if (sg2042_board_info.multi_sockt_mode) {
 		for (int i = 0; i < SG2042_MAX_CHIP_NUM; i++)
@@ -614,7 +559,6 @@ int boot(void)
 
 #endif // ZSBL_BOOT_DEBUG
 
-	__asm__ __volatile__ ("fence.i"::);
 	jump_to(boot_file[ID_OPENSBI].addr, current_hartid(),
 		boot_file[ID_DEVICETREE].addr);
 

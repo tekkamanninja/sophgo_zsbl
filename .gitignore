@@ -18,3 +18,4 @@ tags
 *.lex.c
 *.tab.[ch]
 /*.h
+/.vscode/
