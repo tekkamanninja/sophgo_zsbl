@@ -94,12 +94,12 @@ BOOT_FILE boot_file[ID_MAX] = {
 	},
 	[ID_DEVICETREE] = {
 		.id = ID_DEVICETREE,
-		.name = "0:riscv64/mango_evb_v0.1.dtb",
+		.name = "0:riscv64/mango-sophgo.dtb",
 		.addr = DEVICETREE_ADDR,
 	},
 	[ID_UBOOT] = {
 		.id = ID_UBOOT,
-		.name = "0:riscv64/u-boot-dtb.bin",
+		.name = "0:riscv64/u-boot.bin",
 		.addr = UBOOT_ADDR,
 	},
 
@@ -107,14 +107,14 @@ BOOT_FILE boot_file[ID_MAX] = {
 
 char *sd_img_name[FILE_NUM] = {
 	"0:riscv64/fw_jump.bin",
-	"0:riscv64/mango_evb_v0.1.dtb",
-	"0:riscv64/u-boot-dtb.bin",
+	"0:riscv64/mango-sophgo.dtb",
+	"0:riscv64/u-boot.bin",
 };
 
 char *spflash_img_name[FILE_NUM] = {
 	"fw_jump.bin",
-	"mango_evb_v0.1.dtb",
-	"u-boot-dtb.bin",
+	"mango-sophgo.dtb",
+	"u-boot.bin",
 };
 
 char *ddr_node_name[SG2042_MAX_CHIP_NUM][DDR_CHANLE_NUM] = {
