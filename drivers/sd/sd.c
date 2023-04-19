@@ -40,7 +40,7 @@ static struct mmc_device_info sd_info = {
 
 static bm_sd_params_t bm_params = {
 	.reg_base	= SDIO_BASE,
-	.clk_rate	= 50 * 1000 * 1000,
+	.clk_rate	= 25 * 1000 * 1000,
 	.bus_width	= MMC_BUS_WIDTH_4,
 	.flags		= 0,
 	.card_in	= SDCARD_STATUS_UNKNOWN,
