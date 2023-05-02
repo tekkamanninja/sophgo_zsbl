@@ -106,7 +106,43 @@ enum {
         ID_MAX,
 };
 
-BOOT_FILE boot_file[ID_MAX] = {
+BOOT_FILE zsbl_conf[1] = {
+	[0] = {
+		.id = 0,
+		.name = "0:zsbl.conf",
+		.addr = CONDIF_ADDR,
+	},
+};
+
+char opensbi_path[256] = "\0";
+char kernel_path[256] = "\0";
+char initrd_path[256] = "\0";
+char dtb_path[256] = "\0";
+
+BOOT_FILE boot_file_from_conf[ID_MAX] = {
+	[ID_OPENSBI] = {
+		.id = ID_OPENSBI,
+		.name = opensbi_path,
+		.addr = 0,
+	},
+	[ID_KERNEL] = {
+		.id = ID_KERNEL,
+		.name = kernel_path,
+		.addr = 0,
+	},
+	[ID_RAMFS] = {
+		.id = ID_RAMFS,
+		.name = initrd_path,
+		.addr = 0,
+	},
+	[ID_DEVICETREE] = {
+		.id = ID_DEVICETREE,
+		.name = dtb_path,
+		.addr = 0,
+	},
+};
+
+BOOT_FILE boot_file_fix[ID_MAX] = {
 	[ID_OPENSBI] = {
 		.id = ID_OPENSBI,
 		.name = "0:riscv64/fw_jump.bin",
@@ -128,6 +164,8 @@ BOOT_FILE boot_file[ID_MAX] = {
 		.addr = DEVICETREE_ADDR,
 	},
 };
+
+BOOT_FILE *boot_file = boot_file_fix;
 
 static char *img_name_sd[] = {
 	"0:riscv64/fw_jump.bin",
@@ -231,9 +269,122 @@ static int mango_parse_ini(void)
 	return 0;
 }
 
+int read_conf_file(int dev_num)
+{
+	FILINFO info;
+	IO_DEV *io_dev;
+
+	io_dev = set_current_io_device(dev_num);
+	if (io_dev == NULL) {
+		pr_debug("%s:set current io device failed\n", __func__);
+		return -1;
+	}
+
+	if (io_dev->func.init()) {
+		pr_err("init %s device failed\n", io_dev->type == IO_DEVICE_SD ? "sd" : "flash");
+		goto umount_conf_dev;
+	}
+
+	if (io_dev->func.open(zsbl_conf[0].name, FA_READ)) {
+		pr_err("open %s failed\n", zsbl_conf[0].name);
+		goto close_conf_file;
+	}
+
+	if (io_dev->func.get_file_info(zsbl_conf, 0, &info)) {
+		pr_err("get %s info failed\n", zsbl_conf[0].name);
+		goto close_conf_file;
+	}
+
+	zsbl_conf[0].len = info.fsize;
+	if (io_dev->func.read(zsbl_conf, 0, info.fsize)) {
+		pr_err("read %s failed\n", zsbl_conf[0].name);
+		goto close_conf_file;
+	}
+
+	if (io_dev->func.close()) {
+		pr_err("close %s failed\n", zsbl_conf[0].name);
+		goto umount_conf_dev;
+	}
+
+	wbinv_va_range(zsbl_conf[0].addr, zsbl_conf[0].addr + info.fsize);
+	__asm__ __volatile__ ("fence.i"::);
+
+	io_dev->func.destroy();
+
+	return 0;
+
+close_conf_file:
+	io_dev->func.close();
+umount_conf_dev:
+	io_dev->func.destroy();
+
+	return -1;
+}
+
+void parse_conf_file(char* text)
+{
+	char* line = text;
+	int index = 0;
+	while (*line != '\0') {
+		// skip comment which starts with #
+		if (*line == '#') {
+			// 移动到下一行文本
+			while (*line != '\n') {
+				line++;
+			}
+			line++;
+			continue;
+		}
+		// 解析每一行文本
+		char* name_start = line;
+		char* name_end = line;
+		while (*name_end != '=') {
+			name_end++;
+		}
+		*name_end = '\0';
+		char* path_start = name_end + 1;
+		char* path_end = path_start;
+		while (*path_end != '@') {
+			path_end++;
+		}
+		*path_end = '\0';
+		char* addr_start = path_end + 1;
+		unsigned int addr = 0;
+		sscanf(addr_start, "%x", &addr);
+
+		// 根据解析结果存入对应的数据结构中
+		if (strcmp(name_start, "OPENSBI") == 0) {
+			strcpy(boot_file_from_conf[ID_OPENSBI].name, path_start);
+			boot_file_from_conf[ID_OPENSBI].addr = addr;
+		} else if (strcmp(name_start, "KERNEL") == 0) {
+			strcpy(boot_file_from_conf[ID_KERNEL].name, path_start);
+			boot_file_from_conf[ID_KERNEL].addr = addr;
+		} else if (strcmp(name_start, "INITRD") == 0) {
+			strcpy(boot_file_from_conf[ID_RAMFS].name, path_start);
+			boot_file_from_conf[ID_RAMFS].addr = addr;
+		} else if (strcmp(name_start, "DTB") == 0) {
+			strcpy(boot_file_from_conf[ID_DEVICETREE].name, path_start);
+			boot_file_from_conf[ID_DEVICETREE].addr = addr;
+		}
+
+		// 移动到下一行文本
+		while (*line != '\n') {
+			line++;
+		}
+		line++;
+		if ((++index) >= 4) break;
+	}
+	return;
+}
+
 int read_all_img(IO_DEV *io_dev)
 {
 	FILINFO info;
+
+	pr_warn("[OPENSBI] %s @ 0x%lx\n", boot_file[ID_OPENSBI].name, boot_file[ID_OPENSBI].addr);
+	pr_warn("[KERNEL] %s @ 0x%lx\n", boot_file[ID_KERNEL].name, boot_file[ID_KERNEL].addr);
+	pr_warn("[INITRD] %s @ 0x%lx\n", boot_file[ID_RAMFS].name, boot_file[ID_RAMFS].addr);
+	pr_warn("[DTB] %s @ 0x%lx\n", boot_file[ID_DEVICETREE].name, boot_file[ID_DEVICETREE].addr);
 
 	if (io_dev->func.init()) {
 		pr_err("init %s device failed\n", io_dev->type == IO_DEVICE_SD ? "sd" : "flash");
@@ -241,6 +392,12 @@ int read_all_img(IO_DEV *io_dev)
 	}
 
 	for (int i = 0; i < ID_MAX; i++) {
+
+		if (boot_file[i].name[0] == '\0') {
+			pr_warn("skip file [%d]\n", boot_file[i].id);
+			continue;
+		}
+
 		if (io_dev->func.open(boot_file[i].name, FA_READ)) {
 			pr_err("open %s failed\n", boot_file[i].name);
 			goto close_file;
@@ -296,6 +453,13 @@ static inline char** get_bootfile_list(int dev_num, char** bootfile[])
 int build_bootfile_info(int dev_num)
 {
 	uint32_t reg;
+
+	if (!read_conf_file(dev_num)) {
+		parse_conf_file((char *)zsbl_conf[0].addr);
+		boot_file = boot_file_from_conf;
+		return 0;
+	}
+
 	char** imgs = get_bootfile_list(dev_num, img_name);
 	char** dtbs = get_bootfile_list(dev_num, dtb_name);
 
